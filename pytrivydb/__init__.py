@@ -361,5 +361,3 @@ def list_sources(db_path: Path | str | Database) -> list[str]:
         return db_path.list_sources()
     with Database(db_path) as db:
         return db.list_sources()
-
-
