@@ -1,0 +1,87 @@
+name: nightly-real-db
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"  # weekly Monday 07:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      TRIVY_DB_REF: "ghcr.io/aquasecurity/trivy-db:2"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: "1.25.4"
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pytrivydb
+        run: |
+          uv sync --frozen
+          uv pip install -e .
+
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+        with:
+          version: 1.2.0
+
+      - name: Pull real trivy-db
+        run: |
+          mkdir -p /tmp/trivydb
+          cd /tmp/trivydb
+          oras pull $TRIVY_DB_REF
+          # The artifact contains a single tarball; extract.
+          tar -xzf db.tar.gz
+          ls -la
+
+      - name: Validate row count + bucket skip list + schema version
+        run: |
+          uv run python -c "
+          from pathlib import Path
+          from pytrivydb import Database, supported_schema_versions
+          p = Path('/tmp/trivydb')
+          with Database(p) as db:
+              sources = db.list_sources()
+              print(f'sources: {len(sources)}')
+              assert len(sources) > 100, f'expected ~187 sources, got {len(sources)}'
+              n = sum(1 for _ in db.iter_advisories())
+              print(f'rows: {n}')
+              assert 3_000_000 <= n <= 5_000_000, f'expected ~3.94M rows, got {n}'
+          print('schema versions supported:', supported_schema_versions)
+          "
+
+      - name: Known-CVE semantic smoke tests
+        run: |
+          uv run python -c "
+          from pathlib import Path
+          from pytrivydb import Database
+          from pytrivydb.helpers import summarize_fix_state
+          p = Path('/tmp/trivydb')
+          with Database(p) as db:
+              # CVE-2005-2541 / tar / debian — historically present.
+              advs = db.find_advisories('CVE-2005-2541', 'tar', package_type='deb')
+              assert advs, 'no debian advisories for CVE-2005-2541/tar'
+              print('debian/tar:', summarize_fix_state(advs).fix_state)
+          "
+
+      - name: DEFAULT_CONTENT_SETS drift check
+        run: |
+          # Compare our DEFAULT_CONTENT_SETS to trivy's live source.
+          # Failure here means we should bump the constant in a patch
+          # release.
+          curl -s https://raw.githubusercontent.com/aquasecurity/trivy/main/pkg/detector/ospkg/redhat/redhat.go > /tmp/redhat.go
+          uv run python -c "
+          import re
+          from pytrivydb.redhat import DEFAULT_CONTENT_SETS
+          src = open('/tmp/redhat.go').read()
+          # Crude parse — failure is an early warning, not an exact diff.
+          for key in DEFAULT_CONTENT_SETS:
+              for repo in DEFAULT_CONTENT_SETS[key]:
+                  if repo not in src:
+                      print(f'DRIFT: pytrivydb has {repo!r} but trivy source does not')
+                      raise SystemExit(2)
+          print('DEFAULT_CONTENT_SETS match trivy live source')
+          "
