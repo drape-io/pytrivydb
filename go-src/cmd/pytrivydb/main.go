@@ -16,6 +16,7 @@
 package main
 
 /*
+#include <stdint.h>  // for uintptr_t — Linux headers don't transitively pull this in via stdlib.h
 #include <stdlib.h>
 
 typedef struct {
