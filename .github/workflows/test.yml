@@ -1,0 +1,50 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOAMD64: v2
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: "1.25.4"
+          cache-dependency-path: go-src/go.sum
+
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      - name: Install
+        run: |
+          uv sync --frozen
+          uv pip install -e .
+
+      - name: Lint
+        run: |
+          uv run ruff check pytrivydb/
+          uv run ruff format --check pytrivydb/
+
+      - name: Type-check
+        run: uv run ty check pytrivydb/
+
+      - name: Go tests
+        run: cd go-src && go test ./...
+
+      - name: Python tests
+        run: uv run pytest pytrivydb/tests -v
